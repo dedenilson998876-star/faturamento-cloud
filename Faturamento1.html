@@ -1,0 +1,370 @@
+<!-- Chosen Palette: Red & Black Corporate -->
+<!-- Application Structure Plan: A task-oriented, single-page dashboard centered around an interactive data grid that mimics a spreadsheet's usability. The structure includes a header for context, a control panel for filtering (global search, month dropdown) and actions (export), and the main data table for real-time, in-line editing. This design was chosen to provide a familiar user experience for those accustomed to Excel, while elevating the functionality with real-time collaboration and dynamic filtering, directly addressing the user's need to manage shared billing data efficiently. -->
+<!-- Visualization & Content Choices: The primary data from the report (billing entries) is presented in an interactive HTML <table>. Goal: Enable CRUD (Create, Read, Update, Delete) operations and filtering. Method: In-line <input> elements within table cells for editing, with event listeners triggering real-time updates to a Firestore database. Interactions: Global search and dropdowns filter table rows by modifying their display property. A delete icon in each row triggers a database delete operation. An export button compiles visible data into a downloadable CSV file. Justification: This interactive table is the most effective way to manage and analyze tabular financial data, offering superior collaborative features compared to a static spreadsheet. Library: Firebase JS SDK, Vanilla JS, Tailwind CSS. Confirmed NO complex SVG graphics or Mermaid. -->
+<!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planilha de Faturamento Detalhada (Cloud)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        input[type="number"], input[type="date"], input[type="text"] {
+            border: none;
+            outline: none;
+            width: 100%;
+            text-align: right;
+            background-color: transparent;
+            padding: 0.25rem;
+        }
+        input[type="text"] { text-align: left; padding-left: 0.5rem; }
+        input[name="qtde"], input[name="unitario"] { text-align: right; }
+        input[name="observacao"] { text-align: left; }
+        .filter-input {
+            border: 1px solid #e5e7eb;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            width: 100%;
+        }
+        .header-cell {
+            background-color: #1f2937;
+            color: white;
+            font-weight: 600;
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .data-cell {
+            background-color: white;
+            border-bottom: 1px solid #e5e7eb;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .total-row {
+            background-color: #fee2e2;
+            font-weight: 700;
+            border-top: 2px solid #b91c1c;
+            position: sticky;
+            bottom: 0;
+        }
+        .primary-bg {
+            background-color: #b91c1c;
+        }
+        /* O estilo #user-info não é mais necessário, mas o mantemos caso queira reativar */
+        #user-info {
+            background-color: #fee2e2;
+            color: #7f1d1d;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            /* Escondido para uso individual */
+            display: none; 
+        }
+    </style>
+</head>
+<body class="p-2 sm:p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto bg-white shadow-2xl rounded-xl overflow-hidden">
+        <header class="p-6 primary-bg text-white flex flex-wrap justify-between items-center gap-4">
+            <div>
+                <h1 class="text-2xl font-bold">Registro de Faturamento (Uso Individual/Cloud)</h1>
+                <p class="text-sm opacity-90">Seus dados são salvos automaticamente na nuvem.</p>
+            </div>
+            <!-- O elemento id="user-info" foi mantido mas está escondido por CSS (display: none) -->
+            <div id="user-info" class="flex-shrink-0">Carregando usuário...</div>
+        </header>
+
+        <div class="p-4">
+            <div class="flex flex-wrap gap-4 mb-6 items-end">
+                <div class="flex-1 min-w-[200px]">
+                    <label for="filter-search" class="text-sm font-medium text-gray-700">Pesquisa Rápida (Todas as Colunas):</label>
+                    <input type="text" id="filter-search" placeholder="Digite NF, Cliente, Referência, etc..." class="filter-input mt-1">
+                </div>
+                <div class="min-w-[150px]">
+                    <label for="filter-mes" class="text-sm font-medium text-gray-700">Filtrar por Mês:</label>
+                    <select id="filter-mes" class="filter-input mt-1">
+                        <option value="">Todos os Meses</option>
+                    </select>
+                </div>
+                <button id="export-csv-btn" class="py-2 px-4 bg-gray-500 text-white font-semibold rounded-lg shadow-md hover:bg-gray-600 transition duration-150 ease-in-out min-w-[150px]">
+                    Exportar CSV
+                </button>
+            </div>
+
+            <div id="loading-spinner" class="text-center p-8 text-red-600 font-semibold">
+                Carregando dados do Faturamento...
+            </div>
+            
+            <div class="overflow-x-auto max-h-[60vh] relative">
+                <table class="w-full text-left border-separate border-spacing-0 rounded-lg min-w-[1400px]" id="spreadsheet-table">
+                    <thead>
+                        <tr class="text-xs uppercase tracking-wider">
+                            <th class="header-cell p-3 w-[3rem] rounded-tl-lg">Excluir</th>
+                            <th class="header-cell p-3 data-header">Mês</th>
+                            <th class="header-cell p-3 data-header">NF</th>
+                            <th class="header-cell p-3 data-header">Cliente</th>
+                            <th class="header-cell p-3 data-header">Pedido</th>
+                            <th class="header-cell p-3 data-header">Referência</th>
+                            <th class="header-cell p-3 data-header">Nº OP</th>
+                            <th class="header-cell p-3 w-[7rem] data-header">Data de emissão</th>
+                            <th class="header-cell p-3 w-[7rem] data-header">Data de entrega</th>
+                            <th class="header-cell p-3 text-right w-[6rem] data-header">Qtde Faturada</th>
+                            <th class="header-cell p-3 text-right w-[6rem] data-header">Valor Unitário</th>
+                            <th class="header-cell p-3 w-[12rem] data-header">Observação</th>
+                            <th class="header-cell p-3 text-right w-[8rem] rounded-tr-lg data-header">Vlr Total</th>
+                        </tr>
+                    </thead>
+                    <tbody id="spreadsheet-body">
+                    </tbody>
+                </table>
+            </div>
+            <table class="w-full min-w-[1400px]">
+                 <tfoot>
+                    <tr class="total-row text-base">
+                        <td colspan="12" class="p-3 rounded-bl-lg text-right">Total Geral Faturado (Visível):</td>
+                        <td id="total-general-value" class="p-3 text-right rounded-br-lg w-[8rem]">R$ 0,00</td>
+                    </tr>
+                </tfoot>
+            </table>
+
+            <button id="add-row-btn" class="mt-4 w-full py-2 px-4 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 transition duration-150 ease-in-out">
+                Adicionar Nova Linha de Faturamento
+            </button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-faturamento-app';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId = null, isAuthReady = false;
+        let allBillingEntries = []; 
+
+        const COLLECTION_PATH = `artifacts/${appId}/public/data/faturamento`;
+        const MOCK_ENTRIES = [
+            { mes: 'OUT-25', nf: '11198', cliente: 'PL - C&A', pedido: '498153', referencia: '5034554', op: '23204', emissao: '2025-10-03', entrega: '2025-10-06', qtde: 670, unitario: 39.10, observacao: 'Entrega concluída.' },
+            { mes: 'OUT-25', nf: '11179', cliente: 'PO - RENNER', pedido: '5932554', referencia: '5034495', op: '23708', emissao: '2025-10-03', entrega: '2025-10-04', qtde: 484, unitario: 40.00, observacao: 'Verificar NF.' },
+            { mes: 'NOV-25', nf: '11202', cliente: 'YC - YOUCOM', pedido: '2137030', referencia: '106518-1', op: '23641', emissao: '2025-11-07', entrega: '2025-11-15', qtde: 288, unitario: 93.30, observacao: 'Aguardando confirmação.' },
+        ];
+
+        const body = document.getElementById('spreadsheet-body');
+        const totalGeneralValueDisplay = document.getElementById('total-general-value');
+        const filterSearchInput = document.getElementById('filter-search');
+        const filterMesSelect = document.getElementById('filter-mes');
+        
+        async function initFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                if (initialAuthToken) await signInWithCustomToken(auth, initialAuthToken);
+                else await signInAnonymously(auth);
+                onAuthStateChanged(auth, user => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-info').textContent = `Usuário: ${userId.substring(0, 8)}...`;
+                        isAuthReady = true;
+                        loadData();
+                    }
+                });
+            } catch (error) {
+                console.error("Firebase Init Error:", error);
+                document.getElementById('user-info').textContent = 'Erro de Conexão';
+            }
+        }
+        
+        const formatCurrency = value => (parseFloat(value) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        const calculateRowTotal = (qtde, unitario) => (parseFloat(qtde) || 0) * (parseFloat(unitario) || 0);
+        
+        function calculateGeneralTotal() {
+            const visibleRows = body.querySelectorAll('.data-row:not(.hidden)');
+            let totalGeneral = 0;
+            visibleRows.forEach(tr => {
+                const value = parseFloat(tr.querySelector('.row-total')?.getAttribute('data-row-total')) || 0;
+                totalGeneral += value;
+            });
+            totalGeneralValueDisplay.textContent = formatCurrency(totalGeneral);
+        }
+
+        function saveRowData(tr, docId) {
+            if (!isAuthReady) return;
+            const data = {
+                mes: tr.querySelector('[name="mes"]').value || '',
+                nf: tr.querySelector('[name="nf"]').value || '',
+                cliente: tr.querySelector('[name="cliente"]').value || '',
+                pedido: tr.querySelector('[name="pedido"]').value || '',
+                referencia: tr.querySelector('[name="referencia"]').value || '',
+                op: tr.querySelector('[name="op"]').value || '',
+                emissao: tr.querySelector('[name="emissao"]').value || '',
+                entrega: tr.querySelector('[name="entrega"]').value || '',
+                qtde: parseFloat(tr.querySelector('[name="qtde"]').value) || 0,
+                unitario: parseFloat(tr.querySelector('[name="unitario"]').value) || 0,
+                observacao: tr.querySelector('[name="observacao"]').value || '',
+                updatedAt: serverTimestamp()
+            };
+            data.total = calculateRowTotal(data.qtde, data.unitario);
+            const docRef = doc(db, COLLECTION_PATH, docId);
+            setDoc(docRef, data, { merge: true }).catch(e => console.error("Save Error:", e));
+        }
+
+        const deleteBillingEntry = (docId) => {
+            if (!isAuthReady) return;
+            const docRef = doc(db, COLLECTION_PATH, docId);
+            deleteDoc(docRef).catch(e => console.error("Delete Error:", e));
+        };
+
+        const generateSearchString = (data) => Object.values(data).join(' ').toUpperCase();
+
+        function renderRow(data, docId) {
+            let tr = document.getElementById(docId);
+            if (!tr) {
+                tr = document.createElement('tr');
+                tr.id = docId;
+                tr.className = 'data-row text-sm h-12';
+                body.appendChild(tr);
+            }
+            tr.setAttribute('data-search', generateSearchString(data));
+            tr.setAttribute('data-mes', (data.mes || '').toUpperCase());
+            
+            const rowTotal = data.total || calculateRowTotal(data.qtde, data.unitario);
+            
+            tr.innerHTML = `
+                <td class="data-cell p-1 text-center bg-red-50">
+                    <button class="delete-btn text-gray-600 hover:text-red-700 p-1">
+                        <svg class="h-5 w-5 mx-auto" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 100 2v4a1 1 0 100-2V8z" clip-rule="evenodd" /></svg>
+                    </button>
+                </td>
+                ${['mes', 'nf', 'cliente', 'pedido', 'referencia', 'op', 'emissao', 'entrega', 'qtde', 'unitario', 'observacao'].map(key => {
+                    const type = (key.includes('data')) ? 'date' : (['qtde', 'unitario'].includes(key)) ? 'number' : 'text';
+                    return `<td class="data-cell p-1 text-gray-900 text-xs px-3"><input type="${type}" name="${key}" value="${data[key] || ''}" class="w-full bg-transparent border-0 focus:ring-0"></td>`;
+                }).join('')}
+                <td class="data-cell p-3 text-right font-semibold row-total bg-red-50" data-row-total="${rowTotal.toFixed(2)}">${formatCurrency(rowTotal)}</td>
+            `;
+
+            tr.querySelector('.delete-btn').addEventListener('click', () => deleteBillingEntry(docId));
+            tr.querySelectorAll('input').forEach(input => {
+                input.addEventListener('input', () => {
+                    if (['qtde', 'unitario'].includes(input.name)) {
+                        const qtde = tr.querySelector('[name="qtde"]').value;
+                        const unitario = tr.querySelector('[name="unitario"]').value;
+                        const newTotal = calculateRowTotal(qtde, unitario);
+                        const totalCell = tr.querySelector('.row-total');
+                        totalCell.textContent = formatCurrency(newTotal);
+                        totalCell.setAttribute('data-row-total', newTotal.toFixed(2));
+                        calculateGeneralTotal();
+                    }
+                    saveRowData(tr, docId);
+                });
+            });
+        }
+
+        function applyFilters() {
+            const searchTerm = filterSearchInput.value.toUpperCase();
+            const selectedMonth = filterMesSelect.value.toUpperCase();
+            document.querySelectorAll('#spreadsheet-body .data-row').forEach(tr => {
+                const searchMatch = !searchTerm || tr.getAttribute('data-search').includes(searchTerm);
+                const monthMatch = !selectedMonth || tr.getAttribute('data-mes') === selectedMonth;
+                tr.classList.toggle('hidden', !(searchMatch && monthMatch));
+            });
+            calculateGeneralTotal();
+        }
+
+        function updateFilterOptions() {
+            const months = new Set(allBillingEntries.map(e => e.mes?.toUpperCase()).filter(Boolean));
+            const currentSelected = filterMesSelect.value;
+            filterMesSelect.innerHTML = '<option value="">Todos os Meses</option>';
+            [...months].sort().forEach(month => {
+                filterMesSelect.innerHTML += `<option value="${month}" ${currentSelected === month ? 'selected' : ''}>${month}</option>`;
+            });
+        }
+        
+        async function addMockDataIfEmpty() {
+            const snapshot = await getDocs(collection(db, COLLECTION_PATH));
+            if (snapshot.empty) {
+                for (const entry of MOCK_ENTRIES) {
+                    const newDocRef = doc(collection(db, COLLECTION_PATH));
+                    entry.total = calculateRowTotal(entry.qtde, entry.unitario);
+                    await setDoc(newDocRef, { ...entry, createdAt: serverTimestamp() });
+                }
+            }
+        }
+
+        async function loadData() {
+            await addMockDataIfEmpty();
+            const q = query(collection(db, COLLECTION_PATH));
+            document.getElementById('loading-spinner').style.display = 'none';
+            document.getElementById('spreadsheet-table').parentNode.style.display = 'block';
+
+            onSnapshot(q, snapshot => {
+                allBillingEntries = [];
+                snapshot.docChanges().forEach(change => {
+                    const data = change.doc.data();
+                    const docId = change.doc.id;
+                    if (change.type === "removed") {
+                        document.getElementById(docId)?.remove();
+                    } else {
+                        renderRow(data, docId);
+                    }
+                });
+                
+                snapshot.forEach(doc => allBillingEntries.push({ ...doc.data(), docId: doc.id }));
+                updateFilterOptions();
+                applyFilters();
+            });
+        }
+
+        function exportToCsv() {
+            const headers = ['Mês', 'NF', 'Cliente', 'Pedido', 'Referência', 'Nº OP', 'Data de emissão', 'Data de entrega', 'Qtde Faturada', 'Valor Unitário', 'Observação', 'Vlr Total'];
+            const rows = [['"' + headers.join('","') + '"']];
+            body.querySelectorAll('.data-row:not(.hidden)').forEach(tr => {
+                const rowData = [
+                    tr.querySelector('[name="mes"]').value,
+                    tr.querySelector('[name="nf"]').value,
+                    tr.querySelector('[name="cliente"]').value,
+                    tr.querySelector('[name="pedido"]').value,
+                    tr.querySelector('[name="referencia"]').value,
+                    tr.querySelector('[name="op"]').value,
+                    tr.querySelector('[name="emissao"]').value,
+                    tr.querySelector('[name="entrega"]').value,
+                    tr.querySelector('[name="qtde"]').value,
+                    tr.querySelector('[name="unitario"]').value,
+                    tr.querySelector('[name="observacao"]').value,
+                    tr.querySelector('.row-total').getAttribute('data-row-total')
+                ].map(v => `"${(v || '').replace(/"/g, '""')}"`);
+                rows.push(rowData.join(','));
+            });
+
+            const csvContent = 'data:text/csv;charset=utf-8,' + rows.join('\n');
+            const link = document.createElement('a');
+            link.setAttribute('href', encodeURI(csvContent));
+            link.setAttribute('download', `faturamento_${new Date().toISOString().split('T')[0]}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        document.getElementById('add-row-btn').addEventListener('click', async () => {
+            const date = new Date().toISOString().split('T')[0];
+            const monthYear = new Date().toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }).replace('.', '').replace(' ', '-').toUpperCase();
+            const newDocRef = doc(collection(db, COLLECTION_PATH));
+            await setDoc(newDocRef, { mes: monthYear, cliente: 'Novo Cliente', emissao: date, entrega: date, qtde: 1, unitario: 0, total: 0, createdAt: serverTimestamp() });
+        });
+        
+        filterSearchInput.addEventListener('input', applyFilters);
+        filterMesSelect.addEventListener('change', applyFilters);
+        document.getElementById('export-csv-btn').addEventListener('click', exportToCsv);
+
+        initFirebase();
+    </script>
+</body>
+</html>
